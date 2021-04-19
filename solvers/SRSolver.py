@@ -14,7 +14,7 @@ from networks import init_weights
 from utils import util
 
 
-############################################################
+##################################################################################
 ### Charbonnier Loss (L1)
 class CharbonnierLoss(nn.Module):
     def __init__(self, eps=1e-3):
@@ -25,7 +25,11 @@ class CharbonnierLoss(nn.Module):
         diff = x - y
         loss = torch.mean(torch.sqrt((diff * diff) + (self.eps * self.eps)))
         return loss
-############################################################
+##################################################################################
+
+
+
+
 
 
 class SRSolver(BaseSolver):

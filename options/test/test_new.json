@@ -1,0 +1,33 @@
+{
+    "mode": "sr",
+    "use_cl": false,
+    "gpu_ids": [0],
+
+    "scale": 4,
+    "degradation": "BI",
+    "is_train": false,
+    "use_chop": true,
+    "rgb_range": 255,
+    "self_ensemble": false,
+
+    "datasets": {
+        "test_set1": {
+            "mode": "LRHR",
+            "dataroot_HR": "/data/yangyue/SRFBN/results/HR/Urban100/x4",
+            "dataroot_LR": "/data/yangyue/SRFBN/results/LR/LRBI/Urban100/x4",
+            "data_type": "img"
+        }
+    },
+
+    "networks": {
+        "which_model": "NEW",
+        "num_features": 64,
+        "in_channels": 3,
+        "out_channels": 3,
+        "num_blocks":3
+    },
+
+    "solver": {
+        "pretrained_path": "/data/yangyue/SRFBN/experiments/CASGCN_12/epochs/best_ckp.pth"
+    }
+}

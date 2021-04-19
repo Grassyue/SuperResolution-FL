@@ -1,0 +1,664 @@
+import math
+import torch
+import torch.nn as nn
+from torch.nn import functional
+from networks import blocks
+
+def compute_adj(x):
+    b, c, h, w = x.size()
+    features = x.view(b, c, h*w)
+    sim = torch.bmm(features.permute(0,2,1), features)
+    sim = sim.div(b*c*h*w)
+    sim = torch.relu(sim)
+    d = torch.rsqrt(torch.sum(sim, dim=-1))
+    d2 = torch.diag_embed(d)
+    adj = torch.matmul(d2, sim)
+    adj = torch.matmul(adj, d2)
+    return adj
+
+class ChannelAttention(nn.Module):
+    def __init__(self, in_channels, num_features, reduction=16):
+        super(ChannelAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, num_features//reduction, 1, padding=0, bias=True),
+            nn.ReLU(),
+            nn.Conv2d(num_features//reduction, num_features, 1, padding=0, bias=True),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        y = self.avg_pool(x)
+        y = self.conv(y)
+        return x*y
+
+
+class GraphConv_Layer(nn.Module):
+    def __init__(self, conv, in_features, num_features, bias=True):
+        super(GraphConv_Layer, self).__init__()
+        self.weight = nn.Parameter(torch.FloatTensor(in_features, num_features))
+        nn.init.kaiming_normal_(self.weight.data)
+        self.conv = conv(num_features, num_features, 3)
+        self.ca = ChannelAttention(in_features, num_features)
+
+    def forward(self, x, adj):
+        b, c, h, w = x.size()
+        local = self.conv(x)
+        x_re = x.view(b, c, h*w)
+        support = torch.matmul(x_re.permute(0,2,1), self.weight)
+        non_local = torch.matmul(adj, support)
+        non_local = non_local.view(b, c, h, w)
+        res = (local + non_local) / 2
+        res = x + res
+        return res
+
+
+'''
+class GraphAtt_Layer(nn.Module):
+    def __init__(self, num_features, dropout=0.6):
+        super(GraphAtt_Layer, self).__init__()
+        self.out_features = num_features
+        self.dropout = dropout
+
+        self.weight = nn.Parameter(torch.zeros(size=(num_features, num_features)))
+        nn.init.xavier_uniform_(self.weight.data, gain=1.414)
+        self.a = nn.Parameter(torch.zeros(size=(2*num_features, 1)))
+        nn.init.xavier_uniform_(self.a.data, gain=1.414)
+        self.leakyrelu = nn.LeakyReLU(0.01)
+
+    def forward(self, input):
+        b, c, h, w = input.size()
+        x = input.view(b, h*w, c)
+        B, N, C = x.size()
+        h = torch.matmul(x, self.weight)
+        a_input = torch.cat([h.repeat(1, 1, N).view(B, N*N, C), h.repeat(1, N, 1)], dim=2).view(B,N,N,2*self.out_features)
+
+        import pdb;pdb.set_trace()
+        attention = self.leakyrelu(torch.matmul(a_input, self.a).squeeze(3))
+        attention = nn.functional.softmax(attention, dim=2)
+        attention = nn.functional.dropout(attention, self.dropout, training=self.training)
+        h_prime = torch.bmm(attention, h)
+        out = nn.functional.elu(h_prime + 0.1*h)
+        out = out.view(b, c, h, w)
+        return out
+
+'''
+
+class GraphConv_Block(nn.Module):
+    def __init__(self, conv, in_features, num_features, res_scale=1):
+        super(GraphConv_Block, self).__init__()
+        self.res_scale = res_scale
+        self.gc1 = GraphConv_Layer(conv, in_features, num_features)
+        self.gc2 = GraphConv_Layer(conv, in_features, num_features)
+        
+        self.bn = nn.BatchNorm2d(num_features)
+        self.act = nn.ReLU()
+        self.ca = ChannelAttention(in_features, num_features)
+
+    def forward(self, x, adj):
+        # adj = compute_adj(x)
+        res = self.gc1(x, adj)
+        res = self.bn(res)
+        res = self.act(res)
+        res = self.gc2(res, adj)
+        # res = self.bn(res)
+        # res = self.act(res)
+        res = self.ca(res)
+        # res = self.bn(res)
+        res = res + x
+        return res
+
+
+class Conv_Block(nn.Module):
+    def __init__(self, conv, in_features, num_features):
+        super(Conv_Block, self).__init__()
+        self.conv = conv(in_features, num_features, 3)
+        self.bn = nn.BatchNorm2d(num_features)
+        self.act = nn.ReLU()
+        self.gc = GraphConv_Layer(conv, in_features, num_features)
+
+    def forward(self, x, adj):
+        x = self.conv(x)
+        x = self.act(x)
+        # adj = compute_adj(x)
+        gc = self.gc(x, adj)
+        gc = self.bn(gc)
+        gc = self.act(gc)
+        return gc
+
+
+class Net(nn.Module):
+    def __init__(
+        self, in_channels, out_channels, num_features, upscale_factor, num_blocks,
+         res_scale=1, conv=blocks.default_conv
+    ):
+        super(Net, self).__init__()
+
+        rgb_mean = (0.4488, 0.4371, 0.4040)
+        rgb_std = (1.0, 1.0, 1.0)
+
+        net_head = [conv(in_channels, num_features, 3)]
+
+        net_tail = [
+            blocks.Upsampler(conv, upscale_factor, num_features),
+            conv(num_features, out_channels=3, kernel_size=3)
+        ]  
+
+        decode_head = [conv(in_channels, num_features, 3)]
+        decode_body = [
+            conv(3, num_features, 3),
+            nn.ReLU(),
+            conv(num_features, num_features, 1),
+            conv(num_features, 3, 3)
+        ]
+
+        self.sub_mean = blocks.MeanShift(rgb_mean, rgb_std, sign=-1)
+        self.head = nn.Sequential(*net_head)
+        self.bypass = Conv_Block(conv, num_features, num_features)
+
+        # self.body = nn.Sequential(*net_body)
+        self.body_1 = GraphConv_Block(conv, num_features, num_features)
+        self.body_2 = GraphConv_Block(conv, num_features, num_features)
+        self.body_3 = GraphConv_Block(conv, num_features, num_features)
+        self.body_4 = GraphConv_Block(conv, num_features, num_features)
+        self.body_5 = GraphConv_Block(conv, num_features, num_features)
+        self.body_6 = GraphConv_Block(conv, num_features, num_features)
+        self.body_7 = GraphConv_Block(conv, num_features, num_features)
+        self.concat = conv(7*num_features, num_features, 1)
+
+        self.ca = ChannelAttention(num_features, num_features)
+        self.bn = nn.BatchNorm2d(num_features)
+        self.act = nn.ReLU()
+        self.prox = GraphConv_Layer(conv, num_features, num_features)
+        self.tail = nn.Sequential(*net_tail)
+        self.add_mean = blocks.MeanShift(rgb_mean, rgb_std, 1)
+
+        self.decode_head = nn.Sequential(*decode_head)
+        self.decode_body = nn.Sequential(*decode_body)
+
+    def forward(self, input):
+        b, c, h, w = input.size()
+        x = self.sub_mean(input)
+        x = self.head(x)
+        matrix = compute_adj(x)
+
+        res = self.bypass(x, matrix)
+        res = res + x
+
+        inter1 = self.body_1(res, matrix)
+        inter2 = self.body_2(inter1, matrix)
+        inter3 = self.body_3(inter2, matrix)
+        inter4 = self.body_4(inter3, matrix)
+        inter5 = self.body_5(inter4, matrix)
+        inter6 = self.body_6(inter5, matrix)
+        inter7 = self.body_7(inter6, matrix)
+        inter = torch.cat([inter1, inter2, inter3, inter4, inter5, inter6, inter7], dim=1)
+        inter = self.concat(inter)
+        inter = self.bn(inter)
+        # inter = self.ca(inter)
+        res = inter + res
+
+        adj = compute_adj(res)
+        res = self.prox(res, adj)
+        res = res + x
+
+        x = self.tail(res)
+        hr = self.add_mean(x)
+
+        flr = self.decode_head(x)
+        flr = nn.functional.interpolate(x, size=[h, w])
+        lr = self.decode_body(flr)
+        flr = flr + lr
+        flr = self.add_mean(flr)
+        return hr, flr      
+
+    def load_state_dict(self, state_dict, strict=False):
+        own_state = self.state_dict()
+        for name, param in state_dict.items():
+            if name in own_state:
+                if isinstance(param, nn.Parameter):
+                    param = param.data
+                try:
+                    own_state[name].copy_(param)
+                except Exception:
+                    if name.find('tail') >= 0:
+                        print('Replace pre-trained upsampler to new one...')
+                    else:
+                        raise RuntimeError('While copying the parameter named {}, '
+                                           'whose dimensions in the model are {} and '
+                                           'whose dimensions in the checkpoint are {}.'
+                                           .format(name, own_state[name].size(), param.size()))
+            elif strict:
+                if name.find('tail') == -1:
+                    raise KeyError('unexpected key "{}" in state_dict'
+                                   .format(name))
+
+        if strict:
+            missing = set(own_state.keys()) - set(state_dict.keys())
+            if len(missing) > 0:
+                raise KeyError('missing keys in state_dict: "{}"'.format(missing))
+
+
+
+
+
+
+
+SRSolver.py
+
+import os
+from collections import OrderedDict
+import pandas as pd
+import scipy.misc as misc
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision.utils as thutil
+
+from networks import create_model
+from .base_solver import BaseSolver
+from networks import init_weights
+from utils import util
+
+class SRSolver(BaseSolver):
+    def __init__(self, opt):
+        super(SRSolver, self).__init__(opt)
+        self.train_opt = opt['solver']
+        self.LR = self.Tensor()
+        self.HR = self.Tensor()
+        self.SR = None
+
+        self.records = {'train_loss': [],
+                        'val_loss': [],
+                        'psnr': [],
+                        'ssim': [],
+                        'lr': []}
+1
+        self.model = create_model(opt)
+        self.print_network()
+
+        if self.is_train:
+            self.model.train()
+
+            # set cl_loss
+            if self.use_cl:
+                self.cl_weights = self.opt['solver']['cl_weights']
+                assert self.cl_weights, "[Error] 'cl_weights' is not be declared when 'use_cl' is true"
+
+            # set loss
+            loss_type = self.train_opt['loss_type']
+            if loss_type == 'l1':
+                self.criterion_pix = nn.L1Loss()
+            elif loss_type == 'l2':
+                self.criterion_pix = nn.MSELoss()
+            else:
+                raise NotImplementedError('Loss type [%s] is not implemented!'%loss_type)
+
+            if self.use_gpu:
+                self.criterion_pix = self.criterion_pix.cuda()
+
+            # set optimizer
+            weight_decay = self.train_opt['weight_decay'] if self.train_opt['weight_decay'] else 0
+            optim_type = self.train_opt['type'].upper()
+            if optim_type == "ADAM":
+                self.optimizer = optim.Adam(self.model.parameters(),
+                                            lr=self.train_opt['learning_rate'], weight_decay=weight_decay)
+            else:
+                raise NotImplementedError('Loss type [%s] is not implemented!' % optim_type)
+
+            # set lr_scheduler
+            if self.train_opt['lr_scheme'].lower() == 'multisteplr':
+                self.scheduler = optim.lr_scheduler.MultiStepLR(self.optimizer,
+                                                                self.train_opt['lr_steps'],
+                                                                self.train_opt['lr_gamma'])
+            else:
+                raise NotImplementedError('Only MultiStepLR scheme is supported!')
+        if not self.is_train:
+            self.load()
+
+        print('===> Solver Initialized : [%s] || Use CL : [%s] || Use GPU : [%s]'%(self.__class__.__name__,
+                                                                                       self.use_cl, self.use_gpu))
+        if self.is_train:
+            print("optimizer: ", self.optimizer)
+            print("lr_scheduler milestones: %s   gamma: %f"%(self.scheduler.milestones, self.scheduler.gamma))
+
+    def _net_init(self, init_type='kaiming'):
+        print('==> Initializing the network using [%s]'%init_type)
+        init_weights(self.model, init_type)
+
+
+    def feed_data(self, batch, need_HR=True):
+        input = batch['LR']
+        self.LR.resize_(input.size()).copy_(input)
+
+        if need_HR:
+            target = batch['HR']
+            self.HR.resize_(target.size()).copy_(target)
+
+
+    def train_step(self):
+        self.model.train()
+        self.optimizer.zero_grad()
+
+        loss_batch = 0.0
+        sub_batch_size = int(self.LR.size(0) / self.split_batch)
+        for i in range(self.split_batch):
+            loss_sbatch = 0.0
+            split_LR = self.LR.narrow(0, i*sub_batch_size, sub_batch_size)
+            split_HR = self.HR.narrow(0, i*sub_batch_size, sub_batch_size)
+            if self.use_cl:
+                outputs = self.model(split_LR)
+                loss_steps = [self.criterion_pix(sr, split_HR) for sr in outputs]
+                for step in range(len(loss_steps)):
+                    loss_sbatch += self.cl_weights[step] * loss_steps[step]
+            else:
+                output1, output2 = self.model(split_LR)
+                loss1 = self.criterion_pix(output1, split_HR)
+                loss2 = self.criterion_pix(output2, split_LR)
+                loss_sbatch = loss1 + 0.1 * loss2
+
+                # output = self.model(split_LR)
+                # loss_sbatch = self.criterion_pix(output, split_HR)
+
+            loss_sbatch /= self.split_batch
+            loss_sbatch.backward()
+
+            loss_batch += (loss_sbatch.item())
+
+
+        # if loss_batch < self.skip_threshold * self.last_epoch_loss:
+        self.optimizer.step()
+        self.last_epoch_loss = loss_batch
+        # else:
+        #     print('[Warning] Skip this batch! (Loss: {})'.format(loss_batch))
+
+        
+        self.model.eval()
+        return loss_batch
+
+
+    def test(self):
+        self.model.eval()
+        with torch.no_grad():
+            forward_func = self._overlap_crop_forward if self.use_chop else self.model.forward
+            if self.self_ensemble and not self.is_train:
+                SR = self._forward_x8(self.LR, forward_func)
+            else:
+                SR,flr = forward_func(self.LR)
+
+            if isinstance(SR, list):
+                self.SR = SR[-1]
+            else:
+                self.SR = SR
+
+        self.model.train()
+        if self.is_train:
+            loss_pix = self.criterion_pix(self.SR, self.HR)
+            return loss_pix.item()
+
+
+    def _forward_x8(self, x, forward_function):
+        """
+        self ensemble
+        """
+        def _transform(v, op):
+            v = v.float()
+
+            v2np = v.data.cpu().numpy()
+            if op == 'v':
+                tfnp = v2np[:, :, :, ::-1].copy()
+            elif op == 'h':
+                tfnp = v2np[:, :, ::-1, :].copy()
+            elif op == 't':
+                tfnp = v2np.transpose((0, 1, 3, 2)).copy()
+
+            ret = self.Tensor(tfnp)
+
+            return ret
+
+        lr_list = [x]
+        for tf in 'v', 'h', 't':
+            lr_list.extend([_transform(t, tf) for t in lr_list])
+
+        sr_list = []
+        for aug in lr_list:
+            sr = forward_function(aug)
+            if isinstance(sr, list):
+                sr_list.append(sr[-1])
+            else:
+                sr_list.append(sr)
+
+        for i in range(len(sr_list)):
+            if i > 3:
+                sr_list[i] = _transform(sr_list[i], 't')
+            if i % 4 > 1:
+                sr_list[i] = _transform(sr_list[i], 'h')
+            if (i % 4) % 2 == 1:
+                sr_list[i] = _transform(sr_list[i], 'v')
+
+        output_cat = torch.cat(sr_list, dim=0)
+        output = output_cat.mean(dim=0, keepdim=True)
+
+        return output
+
+
+    def _overlap_crop_forward(self, x, shave=10, min_size=100000, bic=None):
+        """
+        chop for less memory consumption during test
+        """
+        n_GPUs = 2
+        scale = self.scale
+        b, c, h, w = x.size()
+        h_half, w_half = h // 2, w // 2
+        h_size, w_size = h_half + shave, w_half + shave
+        lr_list = [
+            x[:, :, 0:h_size, 0:w_size],
+            x[:, :, 0:h_size, (w - w_size):w],
+            x[:, :, (h - h_size):h, 0:w_size],
+            x[:, :, (h - h_size):h, (w - w_size):w]]
+
+        if bic is not None:
+            bic_h_size = h_size*scale
+            bic_w_size = w_size*scale
+            bic_h = h*scale
+            bic_w = w*scale
+            
+            bic_list = [
+                bic[:, :, 0:bic_h_size, 0:bic_w_size],
+                bic[:, :, 0:bic_h_size, (bic_w - bic_w_size):bic_w],
+                bic[:, :, (bic_h - bic_h_size):bic_h, 0:bic_w_size],
+                bic[:, :, (bic_h - bic_h_size):bic_h, (bic_w - bic_w_size):bic_w]]
+
+        if w_size * h_size < min_size:
+            sr_list = []
+            for i in range(0, 4, n_GPUs):
+                lr_batch = torch.cat(lr_list[i:(i + n_GPUs)], dim=0)
+                if bic is not None:
+                    bic_batch = torch.cat(bic_list[i:(i + n_GPUs)], dim=0)
+
+                sr_batch_temp = self.model(lr_batch)
+
+                if isinstance(sr_batch_temp, list):
+                    sr_batch = sr_batch_temp[-1]
+                else:
+                    sr_batch = sr_batch_temp
+
+                sr_list.extend(sr_batch.chunk(n_GPUs, dim=0))
+        else:
+            sr_list = [
+                self._overlap_crop_forward(patch, shave=shave, min_size=min_size) \
+                for patch in lr_list
+                ]
+
+        h, w = scale * h, scale * w
+        h_half, w_half = scale * h_half, scale * w_half
+        h_size, w_size = scale * h_size, scale * w_size
+        shave *= scale
+
+        output = x.new(b, c, h, w)
+        output[:, :, 0:h_half, 0:w_half] \
+            = sr_list[0][:, :, 0:h_half, 0:w_half]
+        output[:, :, 0:h_half, w_half:w] \
+            = sr_list[1][:, :, 0:h_half, (w_size - w + w_half):w_size]
+        output[:, :, h_half:h, 0:w_half] \
+            = sr_list[2][:, :, (h_size - h + h_half):h_size, 0:w_half]
+        output[:, :, h_half:h, w_half:w] \
+            = sr_list[3][:, :, (h_size - h + h_half):h_size, (w_size - w + w_half):w_size]
+
+        return output
+
+
+    def save_checkpoint(self, epoch, is_best):
+        """
+        save checkpoint to experimental dir
+        """
+        filename = os.path.join(self.checkpoint_dir, 'last_ckp.pth')
+        print('===> Saving last checkpoint to [%s] ...]'%filename)
+        ckp = {
+            'epoch': epoch,
+            'state_dict': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'best_pred': self.best_pred,
+            'best_epoch': self.best_epoch,
+            'records': self.records
+        }
+        torch.save(ckp, filename)
+        if is_best:
+            print('===> Saving best checkpoint to [%s] ...]' % filename.replace('last_ckp','best_ckp'))
+            torch.save(ckp, filename.replace('last_ckp','best_ckp'))
+
+        if epoch % self.train_opt['save_ckp_step'] == 0:
+            print('===> Saving checkpoint [%d] to [%s] ...]' % (epoch,
+                                                                filename.replace('last_ckp','epoch_%d_ckp.pth'%epoch)))
+
+            torch.save(ckp, filename.replace('last_ckp','epoch_%d_ckp.pth'%epoch))
+
+
+    def load(self):
+        """
+        load or initialize network
+        """
+        if (self.is_train and self.opt['solver']['pretrain']) or not self.is_train:
+            model_path = self.opt['solver']['pretrained_path']
+            if model_path is None: raise ValueError("[Error] The 'pretrained_path' does not declarate in *.json")
+
+            print('===> Loading model from [%s]...' % model_path)
+            if self.is_train:
+                checkpoint = torch.load(model_path)
+                self.model.load_state_dict(checkpoint['state_dict'])
+
+                if self.opt['solver']['pretrain'] == 'resume':
+                    self.cur_epoch = checkpoint['epoch'] + 1
+                    self.optimizer.load_state_dict(checkpoint['optimizer'])
+                    self.best_pred = checkpoint['best_pred']
+                    self.best_epoch = checkpoint['best_epoch']
+                    self.records = checkpoint['records']
+
+            else:
+                checkpoint = torch.load(model_path)
+                if 'state_dict' in checkpoint.keys(): checkpoint = checkpoint['state_dict']
+                load_func = self.model.load_state_dict if isinstance(self.model, nn.DataParallel) \
+                    else self.model.module.load_state_dict
+                load_func(checkpoint)
+
+        else:
+            self._net_init()
+
+
+    def get_current_visual(self, need_np=True, need_HR=True):
+        """
+        return LR SR (HR) images
+        """
+        out_dict = OrderedDict()
+        out_dict['LR'] = self.LR.data[0].float().cpu()
+        out_dict['SR'] = self.SR.data[0].float().cpu()
+        if need_np:  out_dict['LR'], out_dict['SR'] = util.Tensor2np([out_dict['LR'], out_dict['SR']],
+                                                                        self.opt['rgb_range'])
+        if need_HR:
+            out_dict['HR'] = self.HR.data[0].float().cpu()
+            if need_np: out_dict['HR'] = util.Tensor2np([out_dict['HR']],
+                                                           self.opt['rgb_range'])[0]
+        return out_dict
+
+
+    def save_current_visual(self, epoch, iter):
+        """
+        save visual results for comparison
+        """
+        if epoch % self.save_vis_step == 0:
+            visuals_list = []
+            visuals = self.get_current_visual(need_np=False)
+            visuals_list.extend([util.quantize(visuals['HR'].squeeze(0), self.opt['rgb_range']),
+                                 util.quantize(visuals['SR'].squeeze(0), self.opt['rgb_range'])])
+            visual_images = torch.stack(visuals_list)
+            visual_images = thutil.make_grid(visual_images, nrow=2, padding=5)
+            visual_images = visual_images.byte().permute(1, 2, 0).numpy()
+            misc.imsave(os.path.join(self.visual_dir, 'epoch_%d_img_%d.png' % (epoch, iter + 1)),
+                        visual_images)
+
+
+    def get_current_learning_rate(self):
+        return self.optimizer.param_groups[0]['lr']
+
+
+    def update_learning_rate(self, epoch):
+        self.scheduler.step(epoch)
+
+
+    def get_current_log(self):
+        log = OrderedDict()
+        log['epoch'] = self.cur_epoch
+        log['best_pred'] = self.best_pred
+        log['best_epoch'] = self.best_epoch
+        log['records'] = self.records
+        return log
+
+
+    def set_current_log(self, log):
+        self.cur_epoch = log['epoch']
+        self.best_pred = log['best_pred']
+        self.best_epoch = log['best_epoch']
+        self.records = log['records']
+
+
+    def save_current_log(self):
+        data_frame = pd.DataFrame(
+            data={'train_loss': self.records['train_loss']
+                , 'val_loss': self.records['val_loss']
+                , 'psnr': self.records['psnr']
+                , 'ssim': self.records['ssim']
+                , 'lr': self.records['lr']
+                  },
+            index=range(1, self.cur_epoch + 1)
+        )
+        data_frame.to_csv(os.path.join(self.records_dir, 'train_records.csv'),
+                          index_label='epoch')
+
+
+    def print_network(self):
+        """
+        print network summary including module and number of parameters
+        """
+        s, n = self.get_network_description(self.model)
+        if isinstance(self.model, nn.DataParallel):
+            net_struc_str = '{} - {}'.format(self.model.__class__.__name__,
+                                                 self.model.module.__class__.__name__)
+        else:
+            net_struc_str = '{}'.format(self.model.__class__.__name__)
+
+        print("==================================================")
+        print("===> Network Summary\n")
+        net_lines = []
+        line = s + '\n'
+        print(line)
+        net_lines.append(line)
+        line = 'Network structure: [{}], with parameters: [{:,d}]'.format(net_struc_str, n)
+        print(line)
+        net_lines.append(line)
+
+        if self.is_train:
+            with open(os.path.join(self.exp_root, 'network_summary.txt'), 'w') as f:
+                f.writelines(net_lines)
+
+        print("==================================================")

@@ -1,4 +1,4 @@
-### pyramid pooling in GCN
+
 import math
 import torch
 import torch.nn as nn
@@ -25,9 +25,9 @@ class Pyramid_pool_feature(nn.Module):
     def __init__(self):
         super(Pyramid_pool_feature, self).__init__()
         self.pool1 = nn.AdaptiveAvgPool2d(1)
-        self.pool2 = nn.AdaptiveAvgPool2d(2)
-        self.pool3 = nn.AdaptiveAvgPool2d(3)
-        self.pool4 = nn.AdaptiveAvgPool2d(6)
+        self.pool2 = nn.AdaptiveAvgPool2d(3)
+        self.pool3 = nn.AdaptiveAvgPool2d(6)
+        self.pool4 = nn.AdaptiveAvgPool2d(8)
 
     def forward(self, x):
         b, c, h, w = x.size()
@@ -80,7 +80,7 @@ class ChannelAttention(nn.Module):
 
 
 # class GraConvLayer(nn.Module):
-#     def __init__(self, conv, in_channels, num_features, bias=True):
+#     def __init__(self, conv, in_channels, num_features,11 bias=True):
 #         super(GraConvLayer, self).__init__()
 #         self.weight = nn.Parameter(torch.FloatTensor(in_channels, num_features))
 #         nn.init.kaiming_normal_(self.weight.data)
@@ -128,12 +128,9 @@ class GraphAttention(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x, adj):
-        # import pdb; pdb.set_trace()
         out = self.graph(x, adj)
-        # out1 = self.norm(out)
-        out = self.relu(out) + x
-        # out = self.relu(self.norm(out))
-        return out
+        out = self.relu(self.norm(out))
+        return out*x
 
 
 class ChannelGraph(nn.Module):

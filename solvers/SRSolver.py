@@ -13,6 +13,8 @@ from .base_solver import BaseSolver
 from networks import init_weights
 from utils import util
 
+from scheduler.cosine_lr import CosineLRScheduler
+
 
 ##################################################################################
 ### Charbonnier Loss (L1)
@@ -26,11 +28,6 @@ class CharbonnierLoss(nn.Module):
         loss = torch.mean(torch.sqrt((diff * diff) + (self.eps * self.eps)))
         return loss
 ##################################################################################
-
-
-
-
-
 
 class SRSolver(BaseSolver):
     def __init__(self, opt):
@@ -81,6 +78,12 @@ class SRSolver(BaseSolver):
                 self.optimizer = optim.Adam(self.model.parameters(),
                                             lr=self.train_opt['learning_rate'], betas=(0.9,0.999),
                                             eps=1e-8, weight_decay=weight_decay)
+#########################################################################
+### add AdamW
+            elif optim_type == 'ADAMW':
+                self.optimizer = optim.AdamW(self.model.parameters(),
+                                            lr=self.train_opt['learning_rate'], weight_decay=0.01)
+#########################################################################
             else:
                 raise NotImplementedError('Loss type [%s] is not implemented!' % optim_type)
 
@@ -89,6 +92,11 @@ class SRSolver(BaseSolver):
                 self.scheduler = optim.lr_scheduler.MultiStepLR(self.optimizer,
                                                                 self.train_opt['lr_steps'],
                                                                 self.train_opt['lr_gamma'])
+#########################################################################
+### add cosine_lr
+            elif self.train_opt['lr_scheme'].lower() == 'cosinelr':
+                self.scheduler = CosineLRScheduler(self.optimizer, self.train_opt['num_epochs'])
+#########################################################################
             else:
                 raise NotImplementedError('Only MultiStepLR scheme is supported!')
         if not self.is_train:
@@ -98,7 +106,7 @@ class SRSolver(BaseSolver):
                                                                                        self.use_cl, self.use_gpu))
         if self.is_train:
             print("optimizer: ", self.optimizer)
-            print("lr_scheduler milestones: %s   gamma: %f"%(self.scheduler.milestones, self.scheduler.gamma))
+            # print("lr_scheduler milestones: %s   gamma: %f"%(self.scheduler.milestones, self.scheduler.gamma))
 
     def _net_init(self, init_type='kaiming'):
         print('==> Initializing the network using [%s]'%init_type)

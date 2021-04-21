@@ -17,7 +17,7 @@
             "dataroot_LR": "/data/yangyue/SRFBN/results/DIV2K/DIV2K_train_LR_aug/x4",
             "data_type": "npy",
             "n_workers": 4,
-            "batch_size": 8,
+            "batch_size": 16,
             "LR_size": 40,
             "use_flip": true,
             "use_rot": true,
@@ -41,10 +41,10 @@
     },
 
     "solver": {
-        "type": "ADAM",
+        "type": "ADAMW",
         "learning_rate": 0.0001,
         "weight_decay": 0,
-        "lr_scheme": "MultiStepLR",
+        "lr_scheme": "CosineLR",
         "lr_steps": [200, 400, 600, 800],
         "lr_gamma": 0.5,
         "loss_type": "l1",

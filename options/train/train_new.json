@@ -17,7 +17,7 @@
             "dataroot_LR": "/data/yangyue/SRFBN/results/DIV2K/DIV2K_train_LR_aug/x4",
             "data_type": "npy",
             "n_workers": 4,
-            "batch_size": 16,
+            "batch_size": 8,
             "LR_size": 40,
             "use_flip": true,
             "use_rot": true,

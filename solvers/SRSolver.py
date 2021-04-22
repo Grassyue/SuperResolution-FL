@@ -18,6 +18,13 @@ from scheduler.cosine_lr import CosineLRScheduler
 
 ##################################################################################
 ### Charbonnier Loss (L1)
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+>>>>>>> 96ca69a41c0d74ef2b3ee5d60a4e8fc49b8fbffd
+>>>>>>> 7865a4b1e6c0b75f587a7c2884ec1ede65df926d
 class CharbonnierLoss(nn.Module):
     def __init__(self, eps=1e-3):
         super(CharbonnierLoss, self).__init__()
@@ -28,6 +35,17 @@ class CharbonnierLoss(nn.Module):
         loss = torch.mean(torch.sqrt((diff * diff) + (self.eps * self.eps)))
         return loss
 ##################################################################################
+
+# class CharbonnierLoss(nn.Module):
+#     def __init__(self, eps=1e-3):
+#         super(CharbonnierLoss, self).__init__()
+#         self.eps = eps
+
+#     def forward(self, x, y):
+#         diff = x - y
+#         loss = torch.mean(torch.sqrt((diff * diff) + (self.eps * self.eps)))
+#         return loss
+############################################################
 
 class SRSolver(BaseSolver):
     def __init__(self, opt):

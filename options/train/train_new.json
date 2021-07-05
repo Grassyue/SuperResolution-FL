@@ -6,18 +6,18 @@
     "scale": 4,
     "is_train": true,
     "use_chop": true,
-    "rgb_range": 255,
+    "rgb_range": 1,
     "self_ensemble": true,
     "save_image": false,
 
     "datasets": {
         "train": {
             "mode": "LRHR",
-            "dataroot_HR": "/data/yangyue/SRFBN/results/DIV2K/DIV2K_train_HR_aug/x4",
-            "dataroot_LR": "/data/yangyue/SRFBN/results/DIV2K/DIV2K_train_LR_aug/x4",
+            "dataroot_HR": "/data/yangyue/sr/results/DIV2K/DIV2K_train_HR_aug/x4",
+            "dataroot_LR": "/data/yangyue/sr/results/DIV2K/DIV2K_train_LR_aug/x4",
             "data_type": "npy",
-            "n_workers": 4,
-            "batch_size": 8,
+            "n_workers": 0,
+            "batch_size": 16,
             "LR_size": 40,
             "use_flip": true,
             "use_rot": true,
@@ -25,31 +25,30 @@
         },
         "val": {
             "mode": "LRHR",
-            "dataroot_HR": "/data/yangyue/SRFBN/results/HR/Set5/x4",
-            "dataroot_LR": "/data/yangyue/SRFBN/results/LR/LRBI/Set5/x4",
+            "dataroot_HR": "/data/yangyue/sr/results/HR/Set5/x4",
+            "dataroot_LR": "/data/yangyue/sr/results/LR/LRBI/Set5/x4",
             "data_type": "img"
         }
     },
 
     "networks": {
-        "which_model": "GCNSR",
+        "which_model": "RDN",
         "num_features": 64,
         "in_channels": 3,
         "out_channels": 3,
-        "num_blocks":3
-
+        "num_blocks": 6,
+        "num_layers": 4
     },
 
     "solver": {
-        "type": "ADAMW",
-        "learning_rate": 0.0001,
+        "type": "ADAM",
+        "learning_rate": 0.001,
         "weight_decay": 0,
-        "lr_scheme": "CosineLR",
-        "lr_steps": [200, 400, 600, 800],
+        "lr_scheme": "MultiStepLR",
+        "lr_steps": [20, 40, 60, 80],
         "lr_gamma": 0.5,
         "loss_type": "l1",
         "manual_seed": 1,
-        "num_epochs": 1000,
         "skip_threshold": 3,
         "split_batch": 1,
         "save_ckp_step": 100,
@@ -57,5 +56,16 @@
         "pretrain": null,
         "pretrained_path": "/data/yangyue/SRFBN/experiments/GCNSR_in3f64_x4_210315-163135_archived_210318-104250/epochs/last_ckp.pth",
         "cl_weights": [1.0, 1.0, 1.0, 1.0]
-    }
+    },
+
+    "fed": {
+        "num_clients": 10,
+        "sample_fraction": 0.4,
+        "num_rounds": 100,
+        "epochs": 5,
+        "alg": "fedavg",
+        "log_file_name": "None",
+        "logdir": "./logs/",
+        "partition": "noniid"
+     }
 }

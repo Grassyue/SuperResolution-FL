@@ -77,11 +77,10 @@ def Client_Update(client_solver, train_loader, total_epoch):
         for iter, batch in enumerate(train_loader):
             client_solver.feed_data(batch)
             iter_loss = client_solver.train_step()
-            # batch_size = batch['LR'].size(0)
-
             batch_loss.append(iter_loss)
             
         epoch_loss.append(sum(batch_loss)/len(batch_loss))
+        
         # epoch_loss.append(iter_loss * batch_size)
         # print("Epoch: [%d/%d]  Train Loss: %.6f" %(epoch, client_epochs, sum(epoch_loss)/len(epoch_loss)))
 
@@ -98,7 +97,7 @@ def Server_Aggregate(w):
 
     w_avg = copy.deepcopy(w[0])
     for k in w_avg.keys():
-        for i in range(len(w)):
+        for i in range(1, len(w)):
             w_avg[k] += w[i][k]
         w_avg[k] = torch.div(w_avg[k], len(w))
     return w_avg

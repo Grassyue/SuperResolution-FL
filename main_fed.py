@@ -1,6 +1,7 @@
 ##### importing libraries #####
 import copy
 import random, argparse
+from typing import OrderedDict
 import torch
 import numpy as np
 import options.options as option
@@ -28,7 +29,7 @@ torch.manual_seed(seed)
 num_clients = opt['fed']['num_clients']
 num_selected = int(num_clients * opt['fed']['sample_fraction'])
 num_rounds = opt['fed']['num_rounds']
-client_epochs = 50
+client_epochs = 2
 
 
 ##### Create desired data distribution among clients and dataloader #####
@@ -65,6 +66,7 @@ print("==================================================")
 print("Method: %s || Scale: %d || Total epoch: %d " %(model_name, scale, client_epochs))
 
 
+
 ##### Helper functions for federated training #####
 def Client_Update(client_solver, train_loader, total_epoch):
     """
@@ -90,17 +92,32 @@ def Client_Update(client_solver, train_loader, total_epoch):
     return client_solver.model.state_dict(), sum(epoch_loss)/len(epoch_loss)
 
 
+# def Server_Aggregate(w):
+#     """
+#     This function has aggregation method with 'mean'
+#     """
+#     w_avg = copy.deepcopy(w[0])
+#     for k in w_avg.keys():
+#         for i in range(1, len(w)):
+#             w_avg[k] += w[i][k] 
+#         w_avg[k] = torch.div(w_avg[k], len(w))
+#     return w_avg
+
+
 def Server_Aggregate(w):
     """
-    This function has aggregation method 'mean'
+    This function has aggregation method with weighted 'mean'
     """
 
-    w_avg = copy.deepcopy(w[0])
-    for k in w_avg.keys():
-        for i in range(1, len(w)):
-            w_avg[k] += w[i][k]
-        w_avg[k] = torch.div(w_avg[k], len(w))
+    w_avg = OrderedDict()
+    for idx, item in enumerate(w):
+        for name, param in item.items():
+            if idx == 0:
+                w_avg[name] = param * 0.1
+            else:
+                w_avg[name] += param * 0.1
     return w_avg
+
 
 
 def Test(global_solver, val_loader):
@@ -154,8 +171,9 @@ for r in range(num_rounds):
     for i in clients_idx:
         w, loss = Client_Update(client_solvers[i], train_loader[i], client_epochs)
         clients_w.append(copy.deepcopy(w))
-        clients_losses.append(copy.deepcopy(loss))
-
+        clients_losses.append(copy.deepcopy(loss))   
+    
+    
     ##### Update global weights #####
     global_w = Server_Aggregate(clients_w)
 
@@ -183,3 +201,4 @@ for r in range(num_rounds):
     
 print("Best PSNR: %.2f" %(sorted(net_best))[-1])
 print('===> Finished !')
+

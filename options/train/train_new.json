@@ -3,52 +3,52 @@
     "use_cl": false,
     "gpu_ids": [0],
 
-    "scale": 4,
+    "scale": 3,
     "is_train": true,
     "use_chop": true,
-    "rgb_range": 1,
-    "self_ensemble": true,
+    "rgb_range": 255,
+    "self_ensemble": false,
     "save_image": false,
 
     "datasets": {
         "train": {
             "mode": "LRHR",
-            "dataroot_HR": "/data/yangyue/sr/results/DIV2K/DIV2K_train_HR_aug/x4",
-            "dataroot_LR": "/data/yangyue/sr/results/DIV2K/DIV2K_train_LR_aug/x4",
+            "dataroot_HR": "./results/DIV2K/DIV2K_train_HR_aug/x3",
+            "dataroot_LR": "./results/DIV2K/DIV2K_train_LR_aug/x3",
             "data_type": "npy",
-            "n_workers": 0,
+            "n_workers": 4,
             "batch_size": 16,
-            "LR_size": 40,
+            "LR_size": 48,
             "use_flip": true,
             "use_rot": true,
             "noise": "."
         },
         "val": {
             "mode": "LRHR",
-            "dataroot_HR": "/data/yangyue/sr/results/HR/Set5/x4",
-            "dataroot_LR": "/data/yangyue/sr/results/LR/LRBI/Set5/x4",
+            "dataroot_HR": "./results/HR/Set14/x3",
+            "dataroot_LR": "./results/LR/LRBI/Set14/x3",
             "data_type": "img"
         }
     },
 
     "networks": {
-        "which_model": "RDN",
+        "which_model": "GCNSR",
         "num_features": 64,
         "in_channels": 3,
         "out_channels": 3,
-        "num_blocks": 6,
-        "num_layers": 4
+        "num_blocks": 3
     },
 
     "solver": {
-        "type": "ADAM",
-        "learning_rate": 0.001,
+        "type": "ADAMW",
+        "learning_rate": 0.0001,
         "weight_decay": 0,
-        "lr_scheme": "MultiStepLR",
-        "lr_steps": [20, 40, 60, 80],
+        "lr_scheme": "CosineLR",
+        "lr_steps": [200, 400, 600, 800],
         "lr_gamma": 0.5,
         "loss_type": "l1",
         "manual_seed": 1,
+        "num_epochs": 200,
         "skip_threshold": 3,
         "split_batch": 1,
         "save_ckp_step": 100,
@@ -56,16 +56,5 @@
         "pretrain": null,
         "pretrained_path": "/data/yangyue/SRFBN/experiments/GCNSR_in3f64_x4_210315-163135_archived_210318-104250/epochs/last_ckp.pth",
         "cl_weights": [1.0, 1.0, 1.0, 1.0]
-    },
-
-    "fed": {
-        "num_clients": 10,
-        "sample_fraction": 0.1,
-        "num_rounds": 100,
-        "epochs": 50,
-        "alg": "fedavg",
-        "log_file_name": "None",
-        "logdir": "./logs/",
-        "partition": "noniid"
-     }
+    }
 }

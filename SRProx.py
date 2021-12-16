@@ -1,4 +1,4 @@
-##### Implementation of FedProx #####
+##### Implementation of FedAvg #####
 
 ##### importing libraries #####
 import copy
@@ -65,35 +65,25 @@ model_name = opt['networks']['which_model'].upper()
 
 print('===> Start Train')
 print("==================================================")
-print("Method: %s || Scale: %d || Total epoch: %d " %(model_name, scale, num_rounds))
+print("Method: %s || Scale: %d || Total round: %d " %(model_name, scale, num_rounds))
 
 
 ##### Create solver log for saving #####
 solver_log = global_solver.get_current_log()
-start_epoch = solver_log['round']
+start_round = solver_log['round']
 
 
 ##### Helper functions for federated training #####
-def Client_Update(client_solver, train_loader, train_set, total_epoch, global_solver):
-    
+def Client_Update(client_solver, train_loader, train_set, total_epoch):    
     for epoch in range(1, total_epoch+1):
-
         train_loss_list = []
         for iter, batch in enumerate(train_loader):
-            client_solver.feed_data(batch)        
+            client_solver.feed_data(batch)
             iter_loss = client_solver.train_step()
-
-            ##### add a proximal term on loss #####
-            if iter > 0:
-                w_diff = torch.tensor(0.)
-                for w, w_t in zip(client_solver.model.parameters(), global_solver.model.parameters()):
-                    w_diff += torch.pow(torch.norm(w - w_t), 2)
-                iter_loss += 0.01 / 2. * w_diff.item()
-
             batch_size = batch['LR'].size(0)
             train_loss_list.append(iter_loss*batch_size)
 
-   
+
     ###### Update lr #####
     client_solver.update_learning_rate(epoch)
     return client_solver.model.state_dict(), sum(train_loss_list)/len(train_set)
@@ -155,6 +145,7 @@ def Test(global_solver, val_loader, solver_log, current_r):
 
 
 
+##### evaluation on local model before aggregation #####
 def Validate(client_solver, val_loader):
     psnr_list = []
     ssim_list = []
@@ -165,7 +156,7 @@ def Validate(client_solver, val_loader):
         iter_loss = client_solver.test()
         val_loss_list.append(iter_loss)
 
-        ##### calculate psnr/ssim metrics #####
+        ##### Calculate psnr/ssim metrics #####
         visuals = client_solver.get_current_visual()
         psnr, ssim = util.calc_metrics(visuals['SR'], visuals['HR'], crop_border=scale)
         psnr_list.append(psnr)
@@ -174,7 +165,7 @@ def Validate(client_solver, val_loader):
     print("PSNR: %.2f  SSIM: %.4f" 
     %(sum(psnr_list)/len(psnr_list), sum(ssim_list)/len(ssim_list)))
 
-    return sum(psnr_list)/len(psnr_list), sum(ssim_list)/len(ssim_list)
+    return sum(psnr_list)/len(psnr_list),sum(ssim_list)/len(ssim_list)
 
 
 ##### Initializing models #####
@@ -197,15 +188,16 @@ ssim_list = []
 for r in range(1, num_rounds+1):
     ##### select random clients #####
     m = max(int(num_selected), 1)
-    clients_idx = np.random.choice(range(num_clients), m, replace=True)
+    clients_idx = np.random.choice(range(num_clients), m, replace=False)
 
     clients_losses = []
     clients_w = []
 
     with tqdm(total=num_selected, desc='Round: [%d/%d]'%(r, num_rounds), miniters=1) as t:
-
         for i in clients_idx:
-            w, loss = Client_Update(client_solvers[i], train_loaders[i], train_set_split[0], client_epochs, global_solver)
+
+            w, loss = Client_Update(client_solvers[i], train_loaders[i], train_set_split[i], client_epochs)
+
             clients_w.append(copy.deepcopy(w))
             clients_losses.append(copy.deepcopy(loss))
 
@@ -213,12 +205,12 @@ for r in range(1, num_rounds+1):
             solver_log['records']['client_loss'].append(loss)
 
             t.set_postfix_str('Client Loss: %.6f' %loss)
-            t.update()   
+            t.update()
 
             ##### evaluation local model before aggregate to server #####
             local_psnr, local_ssim = Validate(client_solvers[i], val_loader)
 
-
+    
     ##### Update global weights #####
     global_w = Server_Aggregate(clients_w)
 

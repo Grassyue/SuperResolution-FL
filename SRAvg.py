@@ -188,7 +188,7 @@ ssim_list = []
 for r in range(1, num_rounds+1):
     ##### select random clients #####
     m = max(int(num_selected), 1)
-    clients_idx = np.random.choice(range(num_clients), m, replace=True)
+    clients_idx = np.random.choice(range(num_clients), m, replace=False)
 
     clients_losses = []
     clients_w = []

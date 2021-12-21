@@ -1,15 +1,13 @@
 ##### Implementation of SCAFFOLOD #####
-
 ##### importing libraries #####
 import copy
-import enum
 import random, argparse
+from numpy.core import records
 import torch
 import numpy as np
 
 from tqdm import tqdm
 from solvers import create_solver
-import solvers
 from utils import util
 from data import create_dataloader, create_dataset
 from options import options as option
@@ -75,81 +73,56 @@ start_round = solver_log['round']
 
 
 ##### helper function for federated training #####
-def Train_SCAFFOLD(
-    client_solver, global_solver, train_loader, train_set, total_epoch,
-    c_global, c_local):
+def train(global_w, c_global, client_solver, train_loader, train_set, total_epoch, c_local):
 
     cnt = 0
 
-    c_global_para = c_global.state_dict()
-    c_local_para = c_local.state_dict()
-
     for epoch in range(1, total_epoch+1):
         train_loss_list = []
+
         for iter, batch in enumerate(train_loader):
             client_solver.feed_data(batch)
             iter_loss = client_solver.train_step()
             batch_size = batch['LR'].size(0)
-            train_loss_list.append(iter_loss*batch_size)
+            train_loss_list.append(iter_loss * batch_size)
 
             net_para = client_solver.model.state_dict()
             lr = client_solver.get_current_learning_rate()
-
             for key in net_para:
-                net_para[key] = net_para[key]-lr*(c_global_para[key]-c_local_para[key])
+                net_para[key] = net_para[key]-lr*(c_global[key]-c_local[key])
             client_solver.model.load_state_dict(net_para)
 
             cnt += 1
 
-    c_new_para = c_local.state_dict()
-    c_delta_para = copy.deepcopy(c_local.state_dict())
-    global_para = global_solver.model.state_dict()
-    net_para = client_solver.model.state_dict()
+    c_new = copy.deepcopy(c_local)
+    c_delta = copy.deepcopy(c_local)
+    net_para = client_solver.model.state_dict()    
 
     for key in net_para:
-        c_new_para[key] = c_new_para[key]-c_global_para[key]+(global_para[key]-net_para[key])/(cnt*lr)
-        c_delta_para[key] = c_new_para[key]-c_local_para[key]
-    c_local.load_state_dict(c_new_para)
+        c_new[key] = c_new[key]-c_global[key]+(global_w[key]-net_para[key])/(cnt*lr)
+        c_delta[key] = c_new[key]-c_local[key]
+
+    c_local = copy.deepcopy(c_new)
 
     ###### Update lr #####
     client_solver.update_learning_rate(epoch)
 
-    return sum(train_loss_list)/len(train_set), c_delta_para
+    return sum(train_loss_list)/len(train_set), c_delta
 
 
 
-def Local_Train_SCAFFOLD(
-    client_idx, client_solvers, global_solver, c_global, c_nets, total_epoch):
-    
-    total_delta = copy.deepcopy(global_solver.model.state_dict())
-    client_losses = []
-
-    for key in total_delta:
-        total_delta[key] = 0.0
-    
-    for i in client_idx:
-        loss, c_delta_para = Train_SCAFFOLD(
-            client_solvers[i], global_solver, train_loaders[i], train_set_split[i],
-            total_epoch, c_global, c_nets[i])
-
-        for key in total_delta:
-            total_delta[key] += c_delta_para[key]
-
-        client_losses.append(copy.deepcopy(loss))
-
-    for key in total_delta:
-        total_delta[key] /= len(client_idx)
-    
-    c_global_para = c_global.state_dict()
-
-    for key in c_delta_para:
-        c_global_para[key] += total_delta[key]            
-    c_global.load_state_dict(c_global_para)
-
-    loss_avg = sum(client_losses)/len(client_losses)
-    nets_list = list(client_solvers[i].model for i in range(num_clients))       
-
-    return loss_avg, nets_list
+def FedAvg(w, weight_avg=None):
+    if weight_avg == None:
+        weight_avg = [1/len(w) for i in range(len(w))]
+        
+    w_avg = copy.deepcopy(w[0])
+    for k in w_avg.keys():
+        w_avg[k] = w_avg[k].cuda() * weight_avg[0]
+        
+    for k in w_avg.keys():
+        for i in range(1, len(w)):
+            w_avg[k] = w_avg[k].cuda() + w[i][k].cuda() * weight_avg[i]
+    return w_avg
 
 
 
@@ -170,14 +143,14 @@ def Test(global_solver, val_loader, solver_log, current_r):
         ssim_list.append(ssim)
  
     # ##### record loss/psnr/ssim #####
-    # solver_log['records']['val_loss'].append(' ')
-    # solver_log['records']['val_loss'].append(sum(val_loss_list)/len(val_loss_list))
+    solver_log['records']['val_loss'].append(' ')
+    solver_log['records']['val_loss'].append(sum(val_loss_list)/len(val_loss_list))
 
-    # solver_log['records']['psnr'].append(' ')
-    # solver_log['records']['psnr'].append(sum(psnr_list)/len(psnr_list))
+    solver_log['records']['psnr'].append(' ')
+    solver_log['records']['psnr'].append(sum(psnr_list)/len(psnr_list))
 
-    # solver_log['records']['ssim'].append(' ')
-    # solver_log['records']['ssim'].append(sum(ssim_list)/len(ssim_list))
+    solver_log['records']['ssim'].append(' ')
+    solver_log['records']['ssim'].append(sum(ssim_list)/len(ssim_list))
 
     ##### record the best epoch #####
     round_is_best = False
@@ -186,13 +159,14 @@ def Test(global_solver, val_loader, solver_log, current_r):
         round_is_best = True
         solver_log['best_round'] = current_r
 
+
     print("PSNR: %.2f  SSIM: %.4f  Loss: %.6f  Best PSNR: %.2f in Round: [%d]" 
     %(sum(psnr_list)/len(psnr_list), sum(ssim_list)/len(ssim_list), sum(val_loss_list)/len(val_loss_list),
       solver_log['best_pred'], solver_log['best_round']))
 
-    # global_solver.set_current_log(solver_log)
-    # global_solver.save_checkpoint(current_r, round_is_best)
-    # global_solver.save_current_log()
+    global_solver.set_current_log(solver_log)
+    global_solver.save_checkpoint(current_r, round_is_best)
+    global_solver.save_current_log()
 
     return sum(val_loss_list)/len(val_loss_list), sum(psnr_list)/len(psnr_list),\
            sum(ssim_list)/len(ssim_list)
@@ -207,18 +181,20 @@ for i in range(num_clients):
     client_solvers[i].model.load_state_dict(global_w)
     
 
-# c_nets = [client_solvers[i].model for i in range(num_clients)]
-# c_global = global_model
-# c_global_para = global_model.state_dict()
-
-
 initial_state_dict = copy.deepcopy(global_model.state_dict())
 server_state_dict = copy.deepcopy(global_model.state_dict())
 
 total = 0
-
 for name, param in global_model.named_parameters():
     total += np.prod(param.size())
+
+
+c_global = copy.deepcopy(initial_state_dict)
+for key in initial_state_dict.keys():
+    c_global[key] = torch.zeros_like(initial_state_dict[key])
+
+for idx in range(num_clients):
+    c_local = copy.deepcopy(c_global)
 
 
 ##### start training #####
@@ -232,40 +208,61 @@ for r in range(1, num_rounds+1):
     ##### select random clients #####
     m = max(int(num_selected), 1)
     clients_idx = np.random.choice(range(num_clients), m, replace=False)
+    clients_losses = []
 
-    global_w = global_model.state_dict()
+    total_delta = copy.deepcopy(initial_state_dict)
+    for key in total_delta:
+        total_delta[key] = torch.zeros_like(initial_state_dict[key])
 
-    if r != 1:
-        for i in clients_idx:
-            client_solvers[i].model.load_state_dict(global_w)
-
-
-    loss, nets = Local_Train_SCAFFOLD(
-        clients_idx, client_solvers, global_solver,
-        c_global, c_nets, client_epochs)
-        
-    print("Round: %d, Average Loss: %.6f" %(r, loss))
-
-    ##### update global model #####
-    total_data = sum(len(train_set_split[i]) for i in clients_idx)
-    fed_avg_freqs = [len(train_set_split[i]) / total_data for i in clients_idx]
-
-    for idx, client in enumerate(clients_idx):
-        # net_para = client_solvers[i].model.state_dict()
-        net_para = nets[client].state_dict()
-        if idx == 0:
-            for key in net_para:
-                global_w[key] = net_para[key] * fed_avg_freqs[idx]
-        else:
-            for key in net_para:
-                global_w[key] += net_para[key] * fed_avg_freqs[idx]
     
+    with tqdm(total=num_selected, desc='Round: [%d/%d]'%(r, num_rounds), miniters=1) as t:
+        for i in clients_idx:
+            client_solvers[i].model.load_state_dict(copy.deepcopy(global_w))
+
+            loss, c_delta = train(
+                global_w, c_global, client_solvers[i], train_loaders[i],
+                train_set_split[i], client_epochs, c_local)
+
+            clients_losses.append(copy.deepcopy(loss))
+            solver_log['records']['client_idx'].append(i)
+            solver_log['records']['client_loss'].append(loss)
+
+            t.set_postfix_str('Client loss: %.6f' %loss)
+            t.update()
+        
+            for key in total_delta:
+                total_delta[key] = total_delta[key] + c_delta[key]  
+        
+    for key in total_delta:
+        total_delta[key] /= len(clients_idx)
+
+    for key in c_global:
+        if c_global[key].type() == 'torch.LongTensor':
+            c_global[key] += total_delta[key].type(torch.LongTensor)
+        elif c_global[key].type() == 'torch.cuda.LongTensor':
+            c_global[key] += total_delta[key].type(torch.cuda.LongTensor)
+        else:
+            c_global[key] += total_delta[key]
+
+    w_locals = []
+    for i in clients_idx:
+        w_locals.append(copy.deepcopy(client_solvers[i].model.state_dict()))
+
+    ww = FedAvg(w_locals)
+    global_w = copy.deepcopy(ww)    
     global_model.load_state_dict(global_w)
+
+    loss_avg = sum(clients_losses)/len(clients_losses)
+    print("Round: %d, Average Loss: %.6f" %(r, loss_avg))
+
+    solver_log['records']['agg_loss'].append(' ')
+    solver_log['records']['agg_loss'].append(loss_avg)
 
 
     ##### Validating #####
     print('=====> Validating...')    
     val_loss, psnr, ssim = Test(global_solver, val_loader, solver_log, r)
     print("\n")
+
 
 print('===> Finished !')

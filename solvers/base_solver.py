@@ -19,6 +19,7 @@ class BaseSolver(object):
         # for better training (stablization and less GPU memory usage)
         self.last_epoch_loss = 1e8
         self.skip_threshold = opt['solver']['skip_threshold']
+        
         # save GPU memory during training
         self.split_batch = opt['solver']['split_batch']
 
@@ -32,8 +33,8 @@ class BaseSolver(object):
         self.save_ckp_step = opt['solver']['save_ckp_step']
         self.save_vis_step = opt['solver']['save_vis_step']
 
-        self.best_epoch = 0
-        self.cur_epoch = 1
+        self.best_round = 0
+        self.cur_round = 1
         self.best_pred = 0.0
 
     def feed_data(self, batch):

@@ -1,4 +1,4 @@
-﻿import os
+import os
 from collections import OrderedDict
 import pandas as pd
 import scipy.misc as misc
@@ -16,37 +16,6 @@ from utils import util
 from scheduler.cosine_lr import CosineLRScheduler
 
 
-##################################################################################
-### Charbonnier Loss (L1)
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> 96ca69a41c0d74ef2b3ee5d60a4e8fc49b8fbffd
->>>>>>> 7865a4b1e6c0b75f587a7c2884ec1ede65df926d
-class CharbonnierLoss(nn.Module):
-    def __init__(self, eps=1e-3):
-        super(CharbonnierLoss, self).__init__()
-        self.eps = eps
-
-    def forward(self, x, y):
-        diff = x - y
-        loss = torch.mean(torch.sqrt((diff * diff) + (self.eps * self.eps)))
-        return loss
-##################################################################################
-
-# class CharbonnierLoss(nn.Module):
-#     def __init__(self, eps=1e-3):
-#         super(CharbonnierLoss, self).__init__()
-#         self.eps = eps
-
-#     def forward(self, x, y):
-#         diff = x - y
-#         loss = torch.mean(torch.sqrt((diff * diff) + (self.eps * self.eps)))
-#         return loss
-############################################################
-
 class SRSolver(BaseSolver):
     def __init__(self, opt):
         super(SRSolver, self).__init__(opt)
@@ -55,11 +24,12 @@ class SRSolver(BaseSolver):
         self.HR = self.Tensor()
         self.SR = None
 
-        self.records = {'train_loss': [],
+        self.records = {'client_idx': [],
+                        'client_loss': [],
+                        'agg_loss': [],
                         'val_loss': [],
                         'psnr': [],
-                        'ssim': [],
-                        'lr': []}
+                        'ssim': []}
 
         self.model = create_model(opt)
         self.print_network()
@@ -78,11 +48,6 @@ class SRSolver(BaseSolver):
                 self.criterion_pix = nn.L1Loss()
             elif loss_type == 'l2':
                 self.criterion_pix = nn.MSELoss()
-#########################################################################
-### add Charbonnier loss
-            elif loss_type == "charbonnier":
-                self.criterion_pix = CharbonnierLoss()
-#########################################################################
             else:
                 raise NotImplementedError('Loss type [%s] is not implemented!'%loss_type)
 
@@ -101,6 +66,12 @@ class SRSolver(BaseSolver):
             elif optim_type == 'ADAMW':
                 self.optimizer = optim.AdamW(self.model.parameters(),
                                             lr=self.train_opt['learning_rate'], weight_decay=0.01)
+#########################################################################
+### add SGD
+
+            elif optim_type == 'SGD':
+                self.optimizer = optim.SGD(self.model.parameters(),
+                                            lr=self.train_opt['learning_rate'], weight_decay=1e-5)
 #########################################################################
             else:
                 raise NotImplementedError('Loss type [%s] is not implemented!' % optim_type)
@@ -156,26 +127,65 @@ class SRSolver(BaseSolver):
                 for step in range(len(loss_steps)):
                     loss_sbatch += self.cl_weights[step] * loss_steps[step]
             else:
-                output1, adj_first, adj_last = self.model(split_LR)
-                loss1 = self.criterion_pix(output1, split_HR)
-                loss2 = self.criterion_pix(adj_last, adj_first)
-                loss_sbatch = loss1 + 100 * loss2
-
-                # output = self.model(split_LR)
-                # loss_sbatch = self.criterion_pix(output, split_HR)
+                # output1, adj_first, adj_last = self.model(split_LR)
+                # loss1 = self.criterion_pix(output1, split_HR)
+                # loss2 = self.criterion_pix(adj_last, adj_first)
+                # loss_sbatch = loss1 + 100 * loss2
+                output = self.model(split_LR)
+                loss_sbatch = self.criterion_pix(output, split_HR)
 
             loss_sbatch /= self.split_batch
             loss_sbatch.backward()
 
             loss_batch += (loss_sbatch.item())
 
-
         if loss_batch < self.skip_threshold * self.last_epoch_loss:
             self.optimizer.step()
             self.last_epoch_loss = loss_batch
         else:
             print('[Warning] Skip this batch! (Loss: {})'.format(loss_batch))
+        
+        self.model.eval()
+        return loss_batch
 
+
+##### training under federated setting #####
+    def local_train(self, body_lr, head_lr):
+        self.model.train()
+
+        body_params = [p for name, p in self.model.named_parameters() if 'UPNet' not in name]
+        head_params = [p for name, p in self.model.named_parameters() if 'UPNet' in name]
+
+        self.optimizer_local = torch.optim.Adam([{'params': body_params, 'lr': body_lr},
+                                                 {'params': head_params, 'lr': head_lr}],
+                                                 betas=(0.9,0.999), eps=1e-8)
+        self.optimizer_local.zero_grad()
+
+        loss_batch = 0.0
+        sub_batch_size = int(self.LR.size(0) / self.split_batch)
+        for i in range(self.split_batch):
+            loss_sbatch = 0.0
+            split_LR = self.LR.narrow(0, i*sub_batch_size, sub_batch_size)
+            split_HR = self.HR.narrow(0, i*sub_batch_size, sub_batch_size)
+            if self.use_cl:
+                outputs = self.model(split_LR)
+                loss_steps = [self.criterion_pix(sr, split_HR) for sr in outputs]
+                for step in range(len(loss_steps)):
+                    loss_sbatch += self.cl_weights[step] * loss_steps[step]
+            else:
+                output = self.model(split_LR)
+                loss_sbatch = self.criterion_pix(output, split_HR)
+
+            loss_sbatch /= self.split_batch
+            loss_sbatch.backward()
+
+            loss_batch += (loss_sbatch.item())
+
+        if loss_batch < self.skip_threshold * self.last_epoch_loss:
+            self.optimizer_local.step()
+            self.last_epoch_loss = loss_batch
+        else:
+            print('[Warning] Skip this batch! (Loss: {})'.format(loss_batch))
         
         self.model.eval()
         return loss_batch
@@ -281,8 +291,8 @@ class SRSolver(BaseSolver):
                 if bic is not None:
                     bic_batch = torch.cat(bic_list[i:(i + n_GPUs)], dim=0)
 
-                sr_batch_temp, adj_first, adj_last = self.model(lr_batch)
-                # sr_batch_temp = self.model(lr_batch)
+                # sr_batch_temp, adj_first, adj_last = self.model(lr_batch)
+                sr_batch_temp = self.model(lr_batch)
 
                 if isinstance(sr_batch_temp, list):
                     sr_batch = sr_batch_temp[-1]
@@ -314,18 +324,19 @@ class SRSolver(BaseSolver):
         return output
 
 
-    def save_checkpoint(self, epoch, is_best):
+##### re-written log under the federated learning #####
+    def save_checkpoint(self, round, is_best):
         """
         save checkpoint to experimental dir
         """
         filename = os.path.join(self.checkpoint_dir, 'last_ckp.pth')
         print('===> Saving last checkpoint to [%s] ...]'%filename)
         ckp = {
-            'epoch': epoch,
+            'round': round,
             'state_dict': self.model.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'best_pred': self.best_pred,
-            'best_epoch': self.best_epoch,
+            'best_round': self.best_round,
             'records': self.records
         }
         torch.save(ckp, filename)
@@ -333,11 +344,11 @@ class SRSolver(BaseSolver):
             print('===> Saving best checkpoint to [%s] ...]' % filename.replace('last_ckp','best_ckp'))
             torch.save(ckp, filename.replace('last_ckp','best_ckp'))
 
-        if epoch % self.train_opt['save_ckp_step'] == 0:
-            print('===> Saving checkpoint [%d] to [%s] ...]' % (epoch,
-                                                                filename.replace('last_ckp','epoch_%d_ckp.pth'%epoch)))
+        if round % self.train_opt['save_ckp_step'] == 0:
+            print('===> Saving checkpoint [%d] to [%s] ...]' % (round,
+                                                                filename.replace('last_ckp','round_%d_ckp.pth'%round)))
 
-            torch.save(ckp, filename.replace('last_ckp','epoch_%d_ckp.pth'%epoch))
+            torch.save(ckp, filename.replace('last_ckp','round_%d_ckp.pth'%round))
 
 
     def load(self):
@@ -354,7 +365,7 @@ class SRSolver(BaseSolver):
                 self.model.load_state_dict(checkpoint['state_dict'])
 
                 if self.opt['solver']['pretrain'] == 'resume':
-                    self.cur_epoch = checkpoint['epoch'] + 1
+                    self.cur_round = checkpoint['round'] + 1
                     self.optimizer.load_state_dict(checkpoint['optimizer'])
                     self.best_pred = checkpoint['best_pred']
                     self.best_epoch = checkpoint['best_epoch']
@@ -411,34 +422,35 @@ class SRSolver(BaseSolver):
         self.scheduler.step(epoch)
 
 
+##### re-written log under the federated learning #####
     def get_current_log(self):
         log = OrderedDict()
-        log['epoch'] = self.cur_epoch
+        log['round'] = self.cur_round
         log['best_pred'] = self.best_pred
-        log['best_epoch'] = self.best_epoch
+        log['best_round'] = self.best_round
         log['records'] = self.records
         return log
 
 
     def set_current_log(self, log):
-        self.cur_epoch = log['epoch']
+        self.cur_round = log['round']
         self.best_pred = log['best_pred']
-        self.best_epoch = log['best_epoch']
+        self.best_round = log['best_round']
         self.records = log['records']
 
 
     def save_current_log(self):
         data_frame = pd.DataFrame(
-            data={'train_loss': self.records['train_loss']
+            data={'client_idx':self.records['client_idx']
+                ,'client_loss': self.records['client_loss']
+                ,'agg_loss': self.records['agg_loss']
                 , 'val_loss': self.records['val_loss']
                 , 'psnr': self.records['psnr']
-                , 'ssim': self.records['ssim']
-                , 'lr': self.records['lr']
-                  },
-            index=range(1, self.cur_epoch + 1)
+                , 'ssim': self.records['ssim']}
+            # index=[val for val in idx for i in range(2)]
         )
-        data_frame.to_csv(os.path.join(self.records_dir, 'train_records.csv'),
-                          index_label='epoch')
+        data_frame.to_csv(os.path.join(self.records_dir, 'train_records.csv'))
+                        #   index_label='round')
 
 
     def print_network(self):

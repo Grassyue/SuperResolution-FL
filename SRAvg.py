@@ -1,5 +1,4 @@
 ##### Implementation of FedAvg #####
-
 ##### importing libraries #####
 import copy
 import random, argparse
@@ -16,18 +15,18 @@ from utils import util
 
 torch.backends.cudnn.benchmark = True
 
-parser = argparse.ArgumentParser(description='Train Super Resolution Models in Federated Senaior')
+parser = argparse.ArgumentParser(description='Train Super Resolution Models in FedAVG')
 parser.add_argument('-opt', type=str, required=True, help='Path to options JSON file.')
 opt = option.parse(parser.parse_args().opt)
 
-##### Random seed #####
+##### random seed #####
 seed = opt['solver']['manual_seed']
 if seed is None: seed = random.randint(1, 10000)
 print("=====> Random Seed: %d" %seed)
 torch.manual_seed(seed)
 
 
-##### Hyperparameters for federated learning #####
+##### hyperparameters for federated learning #####
 num_clients = opt['fed']['num_clients']
 num_selected = int(num_clients * opt['fed']['sample_fraction'])
 num_rounds = opt['fed']['num_rounds']
@@ -68,12 +67,12 @@ print("==================================================")
 print("Method: %s || Scale: %d || Total round: %d " %(model_name, scale, num_rounds))
 
 
-##### Create solver log for saving #####
+##### create solver log for saving #####
 solver_log = global_solver.get_current_log()
 start_round = solver_log['round']
 
 
-##### Helper functions for federated training #####
+##### helper function for federated training #####
 def Client_Update(client_solver, train_loader, train_set, total_epoch):    
     for epoch in range(1, total_epoch+1):
         train_loss_list = []
@@ -89,7 +88,6 @@ def Client_Update(client_solver, train_loader, train_set, total_epoch):
     return client_solver.model.state_dict(), sum(train_loss_list)/len(train_set)
 
 
-
 def Server_Aggregate(w):
     w_avg = copy.deepcopy(w[0])
     for k in w_avg.keys():
@@ -97,9 +95,23 @@ def Server_Aggregate(w):
         w_avg[k] = torch.div(w_avg[k], len(w))
     return w_avg
 
+# def FedAvg(w, weight_avg=None):
+#     if weight_avg == None:
+#         weight_avg = [1/len(w) for i in range(len(w))]
+        
+#     w_avg = copy.deepcopy(w[0])
+#     for k in w_avg.keys():
+#         w_avg[k] = w_avg[k].cuda() * weight_avg[0]
+        
+#     for k in w_avg.keys():
+#         for i in range(1, len(w)):
+#             w_avg[k] = w_avg[k].cuda() + w[i][k].cuda() * weight_avg[i]
+#     return w_avg
 
 
-def Test(global_solver, val_loader, solver_log, current_r):
+
+
+def Test(global_solver, val_loader, solver_log, curr_r):
     psnr_list = []
     ssim_list = []
     val_loss_list = []
@@ -130,15 +142,15 @@ def Test(global_solver, val_loader, solver_log, current_r):
     if solver_log['best_pred'] < (sum(psnr_list)/len(psnr_list)):
         solver_log['best_pred'] = (sum(psnr_list)/len(psnr_list))
         round_is_best = True
-        solver_log['best_round'] = current_r
+        solver_log['best_round'] = curr_r
 
     print("PSNR: %.2f  SSIM: %.4f  Loss: %.6f  Best PSNR: %.2f in Round: [%d]" 
     %(sum(psnr_list)/len(psnr_list), sum(ssim_list)/len(ssim_list), sum(val_loss_list)/len(val_loss_list),
       solver_log['best_pred'], solver_log['best_round']))
 
     global_solver.set_current_log(solver_log)
-    global_solver.save_checkpoint(current_r, round_is_best)
-    global_solver.save_current_log()
+    global_solver.save_checkpoint(curr_r, round_is_best)
+    # global_solver.save_current_log()
 
     return sum(val_loss_list)/len(val_loss_list), sum(psnr_list)/len(psnr_list),\
            sum(ssim_list)/len(ssim_list)
@@ -170,21 +182,15 @@ def Validate(client_solver, val_loader):
 
 ##### Initializing models #####
 global_model = global_solver.model
-client_models = [client_solvers[i].model for i in range(num_selected)]
+# client_models = [client_solvers[i].model for i in range(num_clients)]
 
 global_w = global_model.state_dict()
 
-for model in client_models:
-    model.load_state_dict(global_w)
+for client_solver in client_solvers:
+    client_solver.model.load_state_dict(global_w)
 
 
 ##### Running in FL senaior #####
-total_train_loss = []
-total_val_loss = []
-psnr_list = []
-ssim_list = []
-
-
 for r in range(1, num_rounds+1):
     ##### select random clients #####
     m = max(int(num_selected), 1)
@@ -210,9 +216,13 @@ for r in range(1, num_rounds+1):
             ##### evaluation local model before aggregate to server #####
             local_psnr, local_ssim = Validate(client_solvers[i], val_loader)
 
+    # total_data = sum(len(train_set_split[i]) for i in clients_idx)
+    # fed_avg_freqs = [len(train_set_split[i]) / total_data for i in clients_idx]
+
     
     ##### Update global weights #####
     global_w = Server_Aggregate(clients_w)
+    # global_w = FedAvg(clients_w, fed_avg_freqs)
 
     ##### Copy weight to global_net #####
     global_model.load_state_dict(global_w)

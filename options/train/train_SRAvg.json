@@ -50,7 +50,6 @@
         "lr_gamma": 0.5,
         "loss_type": "l1",
         "manual_seed": 0,
-        "num_epochs": 20,
         "skip_threshold": 3,
         "split_batch": 1,
         "save_ckp_step": 2,
@@ -64,9 +63,9 @@
         "update_part": "body",
         "num_clients": 10,
         "sample_fraction": 0.2,
-        "num_rounds": 20,
-        "epochs": 100,
-        "alg":"FedAVG",
+        "num_rounds": 2,
+        "epochs": 2,
+        "alg":"Fedavg",
         "partition": "noniid"
      }
 }
